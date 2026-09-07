@@ -1,0 +1,28 @@
+# macOS metadata
+.DS_Store
+._*
+.AppleDouble/
+.LSOverride
+
+# Local Go builds and test output
+/dist/
+/impair
+*.test
+/coverage.out
+/coverage.html
+
+# Local Go workspace configuration
+/go.work
+/go.work.sum
+
+# Python integration-test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

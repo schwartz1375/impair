@@ -1,0 +1,10 @@
+impair: Linux network impairment application
+Copyright (C) 2026 Matthew R. Schwartz
+
+Modern successor to my NETEM CLI utility, originally created 
+on 29 May 2007. The original scripts are preserved in legacy/ for historical 
+reference and are not required by the current application.
+
+Distributed under the GNU General Public License, version 3 only.
+See LICENSE for the full terms. Linux, iproute2, nftables, systemd, and other
+runtime tools are separate projects distributed under their respective licenses.

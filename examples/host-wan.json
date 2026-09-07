@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "WAN example",
+  "rules": [
+    {
+      "interface": "ens5",
+      "direction": "egress",
+      "match": {
+        "family": "ipv4",
+        "destination": "198.51.100.20/32"
+      },
+      "impairment": {
+        "delay": "50ms",
+        "jitter": "10ms",
+        "distribution": "normal",
+        "loss_percent": 0.1,
+        "rate": "10mbit",
+        "queue_packets": 10000
+      }
+    },
+    {
+      "interface": "ens5",
+      "direction": "ingress",
+      "match": {
+        "family": "ipv4",
+        "source": "198.51.100.20/32"
+      },
+      "impairment": {
+        "delay": "50ms",
+        "jitter": "10ms",
+        "distribution": "normal",
+        "loss_percent": 0.1,
+        "rate": "10mbit",
+        "queue_packets": 10000
+      }
+    }
+  ]
+}

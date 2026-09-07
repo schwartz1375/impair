@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "name": "Asymmetric HTTPS link",
+  "protect": [
+    "10.20.0.0/24"
+  ],
+  "ssh_ports": [
+    2222
+  ],
+  "rules": [
+    {
+      "interface": "ens5",
+      "direction": "egress",
+      "match": {
+        "destination": "198.51.100.20/32",
+        "protocol": "tcp",
+        "destination_port": 443
+      },
+      "impairment": {
+        "delay": "40ms",
+        "jitter": "10ms",
+        "distribution": "normal",
+        "loss_percent": 0.5,
+        "rate": "5mbit",
+        "queue_packets": 10000
+      }
+    },
+    {
+      "interface": "ens5",
+      "direction": "ingress",
+      "match": {
+        "source": "198.51.100.20/32",
+        "protocol": "tcp",
+        "source_port": 443
+      },
+      "impairment": {
+        "delay": "80ms",
+        "jitter": "20ms",
+        "distribution": "normal",
+        "rate": "20mbit"
+      }
+    }
+  ]
+}

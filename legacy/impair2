@@ -1,0 +1,89 @@
+#!/bin/bash
+#**************************************************************
+#       MATTHEW R. SCHWARTZ (matthew.r.schwartz@gmail.com)
+#       Code license:    GNU General Public License v3
+#**************************************************************
+
+# Bandwidths or rates can be specified in:
+#       kbps   Kilobytes per second
+#       mbps   Megabytes per second
+#       kbit   Kilobits per second
+#       mbit   Megabits per second
+
+# Location for tc command.
+TC=/usr/sbin/tc
+
+# The network interface you're planning on limiting.
+IF=eth0             # Interface
+
+# Bandwidth limit 
+BANDWIDTH="1kbps" 
+
+# Packet Loss
+PLOSS="0.1%"
+
+#Latench/ Delay
+LATENCY="100ms"
+
+#Variation
+VAR="10ms"
+
+start() {
+$TC qdisc add dev $IF handle 1: root htb default 10
+$TC class add dev $IF parent 1: classid 1:10 htb rate $BANDWIDTH
+$TC qdisc add dev $IF parent 1:10 handle 10: netem delay $LATENCY $VAR distribution normal loss $PLOSS
+}
+
+stop() {
+# Stops bandwidth shaping.
+    $TC qdisc del dev $IF root
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+# Displays the traffic control status.
+    $TC -s qdisc ls dev $IF
+}
+
+case "$1" in
+
+  start)
+    echo -n "Starting bandwidth shaping: "
+    start
+    echo "done"
+    ;;
+
+  stop)
+    echo -n "Stopping bandwidth shaping: "
+    stop
+    echo "done"
+    ;;
+
+  restart)
+    echo -n "Restarting bandwidth shaping: "
+    restart
+    echo "done"
+    ;;
+
+  status)
+    echo "Bandwidth shaping status for $IF:"
+    status
+    echo ""
+    ;;
+
+  *)
+    pwd=$(pwd)
+    echo "Usage: impair {start|stop|restart|status}"
+    ;;
+
+esac
+
+exit 0
+
+
+

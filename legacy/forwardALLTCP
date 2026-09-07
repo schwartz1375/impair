@@ -1,0 +1,16 @@
+#!/bin/bash
+
+RED_INTERFACE=eth1
+
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+/bin/echo "1" > /proc/sys/net/ipv4/ip_forward
+
+iptables -t nat -A POSTROUTING -o $RED_INTERFACE -j MASQUERADE
+#iptables -t nat -A PREROUTING -i $RED_INTERFACE -s 0/0 -p TCP --sport 1:65535 --dport 1:65535 -j DNAT --to 192.168.1.100
+iptables -t nat -A PREROUTING -i $RED_INTERFACE -s 0/0 -p TCP -j DNAT --to 192.168.1.100
+
+#display configuration
+iptables -t nat --list
+

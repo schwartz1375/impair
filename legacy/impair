@@ -1,0 +1,164 @@
+: # use perl                            -*- mode: Perl; -*-
+    eval 'exec perl -S $0 "$@"'
+    if $running_under_some_shell;
+
+use warnings;
+use strict;
+#**************************************************************
+#       MATTHEW R. SCHWARTZ (matthew.r.schwartz@gmail.com)
+#       Original created on 29 May 2007
+#	NETEM CLI Utility is a CLI frontin for TC (http://www.linuxfoundation.org/en/Net:Netem)
+#	This Script was developed to help myself in development
+#       Code license:  	 GNU General Public License v3
+#**************************************************************
+print "NETEM CLI Utility Tool\n";
+#check that tc command is in the path
+my $inFace = "eth0";
+my $debug = 0;
+my $verbose = 0;
+my $delay = 0;
+my $jitter = 0;
+my $delayCorr = 0;
+my $packetLoss = 0;
+my $bandwidth = "";
+my $status = 1;
+my $reset = 1;
+my $sock = "";
+my @interfaces = "";
+
+use vars '$zero';       $zero   = $0;           # stripped script name
+$zero   =~ s,.*/,,;     # remove all but final part of path.
+$zero   =~ s,.pl$,,;    # remove trailing ".pl"
+
+sub usage
+{
+    my($exitval) = shift(@_);
+
+    print STDERR <<EOS;
+Usage: $zero [options] iface
+    --                          Stop command line processing.
+
+    -r or --reset		reset all interfaces.
+    -s or --status		display current status.
+    -i or --interactive		run in interactive mode.
+    --delay ms			enable delay in milliseconds.
+    --jitter ms			enable jitter in milliseconds.
+    --dcorrel pct		enable delay correlation percent.
+    --ploss pct			enable packet loss percent.
+    --bandwidth [ NNNkbit | NNNmbit]
+    				enable bandwidth limiter in kilobits or megabits per second.
+
+    -v or --verbose             Enable additional status messages.
+    -d or --debug		Enable debug.
+    -? or -h or --help          Print this usage statement.
+    --man                       Print the embedded manual page.
+
+EOS
+    exit($exitval)  if defined($exitval);
+
+}
+
+sub interactive
+{
+    #check that tc is in path and logged in as root
+
+    print "Enter the ethernet interface to use(i.e eth0): ";
+    chomp($inFace = <STDIN>);
+    print "Enter delay in milliseconds: ";
+    chomp($delay = <STDIN>);
+    print "Enter jitter in milliseconds: ";
+    chomp($jitter = <STDIN>);
+    print "Enter delay correlation %: ";
+    chomp($delayCorr = <STDIN>);
+    print "Enter packet Loss %: ";
+    chomp($packetLoss = <STDIN>);
+    print "Enter bandwidth in kbit(Kilobits per second), mbit (Megabits per second) enter NULL if no bandwidth limit: ";
+    chomp($bandwidth = <STDIN>);
+    doit();	
+}
+
+sub doit
+{
+    my ($cmd);
+
+    $cmd = "";
+
+    `tc qdisc del dev $inFace root 2> /dev/null`;
+
+    $cmd .= "delay ${delay}ms " if ($delay);
+    $cmd .= "${jitter}ms " if ($jitter);
+    $cmd .= "${delayCorr}% " if ($delayCorr);
+    $cmd .= "loss ${packetLoss}% " if ($packetLoss);
+
+    #Use netem to implement packet delay
+    #delay = 100ms, jitter 10ms Delay correlation 25% packet loss 5%
+    print("tc qdisc add dev $inFace root handle 1: netem $cmd\n") if ($debug);
+    `tc qdisc add dev $inFace root handle 1: netem $cmd`;
+
+    #set up the bandwidth limits
+    if ("" ne $bandwidth){
+	    `tc qdisc add dev $inFace parent 1: handle 10: htb default 12`;
+	    `tc class add dev $inFace parent 10: classid 10:1 htb rate $bandwidth ceil $bandwidth`;
+    }
+
+    print "\nCurrent running config\n";
+    print `tc qdisc show dev $inFace`;
+    exit(0);	
+}
+
+#######################################
+## 	TO be run via command ARGS only!
+#######################################
+##show running netem on the system 
+sub status
+{
+	print("Netem status:\n");
+	print `tc qdisc`;
+	exit(0);
+}
+
+##Rest/remove all netem usage from all system interfaces
+sub xreset
+{
+	print("Reseting all system ethernet and loopback interfaces\n");
+	opendir(DIR, "/proc/sys/net/ipv4/conf") || die "cannot opendir /proc/sys/net/ipv4/conf: $!";
+	@interfaces = grep { /^[el]/ && -d "/proc/sys/net/ipv4/conf/$_" } readdir(DIR);
+	closedir DIR;
+ 	for my $if (@interfaces) {
+		print "if: $if\n" if ($verbose);
+    		`tc qdisc del dev $if root 2> /dev/null`;
+	}
+	status();
+	exit(0);
+}
+
+
+
+#Uselful links:
+#    * http://linux-net.osdl.org/index.php/Netem - the netem wiki
+#    * http://lartc.org/howto/lartc.qdisc.html - Linux advanced routing
+#    * http://luxik.cdi.cz/~devik/qos/htb/ - HTB home page
+
+while (@ARGV > 0 && $ARGV[0] =~ /^-./) {
+    $_ = shift(@ARGV);
+    if (/^-d$/ || /^--debug$/) 		{ $debug++; next; }
+    if (/^-v$/ || /^--verbose$/) 	{ $verbose++; next; }
+
+    if (/^-r$/ || /^--reset$/) 		{ xreset(); }
+    if (/^-s$/ || /^--status$/)		{ status(); }
+    if (/^-i$/ || /^--interactive$/)	{ interactive(); }
+    if (/^--delay/)		{ $delay = shift; next; }
+    if (/^--jitter/)		{ $jitter = shift; next; }
+    if (/^--dcorrel/)		{ $delayCorr = shift; next; }
+    if (/^--ploss/)		{ $packetLoss = shift; next; }
+    if (/^--bandwidth/)		{ $bandwidth = shift; next; }
+
+    warn("I don't recognize this switch: $_\n");
+    usage();
+    exit(1);
+}
+
+$inFace = $ARGV[0];
+usage(1) if ("" eq "$inFace");
+
+doit();

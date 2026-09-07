@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "Routed WAN example",
+  "rules": [
+    {
+      "interface": "ens5",
+      "direction": "egress",
+      "match": {
+        "family": "ipv4",
+        "input_interface": "ens6"
+      },
+      "impairment": {
+        "delay": "50ms",
+        "jitter": "10ms",
+        "distribution": "normal",
+        "loss_percent": 0.1,
+        "rate": "10mbit",
+        "queue_packets": 10000
+      }
+    },
+    {
+      "interface": "ens6",
+      "direction": "egress",
+      "match": {
+        "family": "ipv4",
+        "input_interface": "ens5"
+      },
+      "impairment": {
+        "delay": "50ms",
+        "jitter": "10ms",
+        "distribution": "normal",
+        "loss_percent": 0.1,
+        "rate": "10mbit",
+        "queue_packets": 10000
+      }
+    }
+  ],
+  "gateway": {
+    "inside": "ens6",
+    "outside": "ens5",
+    "client_cidr": "10.10.1.0/24"
+  }
+}

@@ -1,0 +1,17 @@
+#!/bin/bash
+
+echo "Stopping IP forwarding"
+/bin/echo "0" > /proc/sys/net/ipv4/ip_forward
+echo "Flushing and rmoving all user defined chains:"
+iptables -F
+iptables -X
+echo  "Flushing and rmoving all NAT defined chains:"
+iptables -t nat -F
+iptables -t nat -X
+echo "Zero the packet and byte counter in all chains:"
+iptables -Z
+iptables -t nat -Z
+echo "Resetting built-in chains to the default ACCEPT policy:"
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
