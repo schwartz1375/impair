@@ -69,6 +69,8 @@ type Link struct {
 	Index int    `json:"ifindex"`
 	Name  string `json:"ifname"`
 	Alias string `json:"ifalias"`
+	MTU   int    `json:"mtu"`
+	Type  string `json:"link_type"`
 	Info  struct {
 		Kind string `json:"info_kind"`
 	} `json:"linkinfo"`
@@ -224,6 +226,15 @@ func Preflight(r Runner, p Profile, plan Plan) (map[string]int, error) {
 		if rule.Match.InputInterface != "" {
 			if e = need(rule.Match.InputInterface); e != nil {
 				return nil, e
+			}
+		}
+		if t := rule.IPv4Transport; t != nil {
+			link := lm[rule.Interface]
+			if link.MTU != t.InnerMTU() {
+				return nil, fmt.Errorf("%s MTU is %d; ipv4_transport requires provisioned MTU %d (BLACK MTU %d minus overhead %d); impair does not change MTUs", rule.Interface, link.MTU, t.InnerMTU(), t.BlackMTU, t.OverheadBytes)
+			}
+			if link.Type != "ether" || (link.Info.Kind != "" && link.Info.Kind != "veth") {
+				return nil, fmt.Errorf("%s: ipv4_transport requires plain Ethernet or veth egress; VLAN, bridge, and tunnel byte accounting is unsupported", rule.Interface)
 			}
 		}
 		qs, e := query[[]Qdisc](r, "tc", "-j", "qdisc", "show", "dev", rule.Interface)

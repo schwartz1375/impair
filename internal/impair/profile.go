@@ -16,19 +16,43 @@ import (
 const Version = "1.0.0"
 
 type Profile struct {
-	Version  int      `json:"version"`
-	Name     string   `json:"name"`
-	Rules    []Rule   `json:"rules"`
-	Protect  []string `json:"protect,omitempty"`
-	SSHPorts []int    `json:"ssh_ports,omitempty"`
-	Gateway  *Gateway `json:"gateway,omitempty"`
+	Version          int      `json:"version"`
+	Name             string   `json:"name"`
+	Rules            []Rule   `json:"rules"`
+	Protect          []string `json:"protect,omitempty"`
+	SSHPorts         []int    `json:"ssh_ports,omitempty"`
+	Gateway          *Gateway `json:"gateway,omitempty"`
+	ManagementPolicy string   `json:"management_policy,omitempty"`
 }
 type Rule struct {
-	Interface  string     `json:"interface"`
-	Direction  string     `json:"direction"`
-	Match      Match      `json:"match"`
-	Impairment Impairment `json:"impairment"`
+	Interface     string         `json:"interface"`
+	Direction     string         `json:"direction"`
+	Match         Match          `json:"match"`
+	Impairment    Impairment     `json:"impairment"`
+	Component     string         `json:"component,omitempty"`
+	IPv4Transport *IPv4Transport `json:"ipv4_transport,omitempty"`
 }
+
+// IPv4Transport is a fixed size envelope, not an encapsulation backend.
+// The egress interface is provisioned externally with MTU = BlackMTU - OverheadBytes.
+type IPv4Transport struct {
+	BlackMTU      int `json:"black_mtu"`
+	OverheadBytes int `json:"overhead_bytes"`
+}
+
+func (t IPv4Transport) InnerMTU() int { return t.BlackMTU - t.OverheadBytes }
+
+// Untagged Ethernet egress already includes 14 bytes outside the inner IP packet.
+// Subtract those bytes so rate accounts for inner IP length + envelope overhead.
+func (t IPv4Transport) NetemOverhead() int { return t.OverheadBytes - 14 }
+
+func (p Profile) protectedSSHPorts() []int {
+	if p.ManagementPolicy == "separate" {
+		return nil
+	}
+	return append([]int{22}, p.SSHPorts...)
+}
+
 type Match struct {
 	Family          string `json:"family,omitempty"`
 	Source          string `json:"source,omitempty"`
@@ -122,6 +146,15 @@ func (p *Profile) Validate() error {
 	if len(p.Rules) > 32 || len(p.Protect) > 64 || len(p.SSHPorts) > 32 {
 		return fmt.Errorf("too many rules, protected networks, or SSH ports")
 	}
+	switch p.ManagementPolicy {
+	case "", "automatic":
+	case "separate":
+		if len(p.Protect) != 0 || len(p.SSHPorts) != 0 {
+			return fmt.Errorf("separate management requires an independent management path, without protect or ssh_ports bypasses")
+		}
+	default:
+		return fmt.Errorf("management_policy must be automatic or separate")
+	}
 	for _, port := range p.SSHPorts {
 		if !validPort(port) {
 			return fmt.Errorf("invalid SSH port %d", port)
@@ -152,6 +185,25 @@ func (p *Profile) Validate() error {
 		if r.Direction == "ingress" && r.Match.InputInterface != "" {
 			return fmt.Errorf("input_interface is only valid on egress rules")
 		}
+		if p.ManagementPolicy == "separate" && (r.Direction != "egress" || r.Match.InputInterface == "" || r.Match.InputInterface == r.Interface) {
+			return fmt.Errorf("rule %d: separate management requires egress transit selection from a different input_interface", i)
+		}
+		switch r.Component {
+		case "", "encryptor_a", "black_transport", "encryptor_b":
+		default:
+			return fmt.Errorf("rule %d: unknown component", i)
+		}
+		if t := r.IPv4Transport; t != nil {
+			if r.Component != "black_transport" || p.ManagementPolicy != "separate" || r.Match.Family != "ipv4" {
+				return fmt.Errorf("rule %d: ipv4_transport requires component black_transport, separate management, and IPv4 selection", i)
+			}
+			if t.BlackMTU < 68 || t.BlackMTU > 65535 || t.OverheadBytes < 0 || t.OverheadBytes > t.BlackMTU-68 {
+				return fmt.Errorf("rule %d: black_mtu must be 68..65535 and overhead_bytes must leave an inner MTU of at least 68", i)
+			}
+			if r.Impairment.Rate == "" {
+				return fmt.Errorf("rule %d: ipv4_transport requires an explicit rate in modeled outer IP bits/s", i)
+			}
+		}
 		if err := r.Impairment.validate(); err != nil {
 			return fmt.Errorf("rule %d: %w", i, err)
 		}
@@ -178,7 +230,7 @@ func (p *Profile) Validate() error {
 				return fmt.Errorf("invalid published protocol or port")
 			}
 			if f.Protocol == "tcp" {
-				for _, sp := range append([]int{22}, p.SSHPorts...) {
+				for _, sp := range p.protectedSSHPorts() {
 					if f.ListenPort == sp {
 						return fmt.Errorf("cannot publish protected SSH port %d", sp)
 					}
@@ -303,6 +355,18 @@ func (n *Impairment) validate() error {
 	return nil
 }
 func (n Impairment) Args() []string {
+	return n.args(nil)
+}
+
+func (r Rule) netemArgs() []string {
+	if r.IPv4Transport != nil {
+		overhead := r.IPv4Transport.NetemOverhead()
+		return r.Impairment.args(&overhead)
+	}
+	return r.Impairment.Args()
+}
+
+func (n Impairment) args(overhead *int) []string {
 	a := []string{"netem", "limit", strconv.Itoa(n.Limit)}
 	d, _ := duration(n.Delay)
 	j, _ := duration(n.Jitter)
@@ -332,6 +396,9 @@ func (n Impairment) Args() []string {
 	}
 	if n.Rate != "" {
 		a = append(a, "rate", n.Rate)
+		if overhead != nil {
+			a = append(a, strconv.Itoa(*overhead))
+		}
 	}
 	if n.Seed != nil {
 		a = append(a, "seed", strconv.FormatUint(uint64(*n.Seed), 10))

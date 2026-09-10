@@ -67,3 +67,20 @@ func TestExampleOfflineRoundtrip(t *testing.T) {
 		}
 	}
 }
+
+func TestInlineExamples(t *testing.T) {
+	for _, stage := range []string{"a", "black", "b"} {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join("..", "..", "examples", "inline-"+stage+".json")
+			for _, command := range []string{"validate", "plan"} {
+				out, err := capture(t, func() error { return mainErr([]string{command, "--profile", path}) })
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stage == "black" && command == "plan" && (!strings.Contains(out, "MTU 1436") || !strings.Contains(out, "netem overhead 50")) {
+					t.Fatal("offline plan omitted transport prerequisites", out)
+				}
+			}
+		})
+	}
+}

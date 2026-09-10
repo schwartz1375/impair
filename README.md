@@ -8,13 +8,14 @@ Modern successor to my 2007 NETEM utility and the `impair2`,
 
 ## What is included
 
-- One executable, with Linux x86-64 and ARM64/Graviton builds in `dist/`.
+- One executable; `make release` produces Linux x86-64 and ARM64/Graviton builds in `dist/`.
 - Separate ingress and egress rules, each with its own impairment settings.
 - IPv4/IPv6 address, subnet, TCP/UDP port, protocol, and incoming-interface selectors.
 - Strict JSON profiles, offline command previews, diagnostics, and live kernel counters.
 - Independent systemd expiry, a durable-on-write runtime journal, serialized changes,
   rollback after command failures, and repeatable cleanup.
 - Optional IPv4 forwarding rules, scoped masquerading, and explicit TCP/UDP DNAT ports.
+- A synthetic IPv4 inline model with fixed envelope accounting and a checked MTU prerequisite.
 - Go source without third-party Go dependencies, unit tests, and privileged packet tests.
 
 This release is a CLI application. It has no browser interface, HTTP API, packet
@@ -74,7 +75,8 @@ sudo dnf install -y iproute iproute-tc nftables ethtool
 The AL2023 package set includes `iproute-tc`.
 [AWS package reference](https://docs.aws.amazon.com/linux/al2023/release-notes/all-packages.html)
 
-From the extracted project directory, verify and install the appropriate binary:
+Build with `make release` first, or obtain a release containing `dist/`. From the
+project directory, verify and install the appropriate binary:
 
 ```bash
 cd dist
@@ -91,7 +93,7 @@ impair version
 ```
 
 Checksums detect accidental corruption; they are not a publisher signature. The
-bundled builds use Go 1.22.2. For your own releases, rebuild with your organization's
+repository does not track prebuilt binaries. Build releases with your organization's
 current supported Go toolchain. The source requires Go 1.22 or newer:
 
 ```bash
@@ -233,7 +235,10 @@ Example: asymmetric link to an HTTPS endpoint, with protected management access:
 | `queue_packets` | Netem queue capacity, default 10,000 packets; accepted range 1–10,000,000. |
 | `seed` | Optional unsigned 32-bit netem random seed. Requires iproute2/kernel support; omitted by default for portability. |
 | `protect` | Additional IPs/subnets excluded in both directions, before any target selection. |
-| `ssh_ports` | Additional protected TCP ports. Port 22 is always protected. |
+| `ssh_ports` | Additional protected TCP ports under the default `automatic` management policy, which also protects port 22. |
+| `management_policy` | `automatic` (default) or `separate`; see management protection and the inline model below. |
+| `rules[].component` | Optional attribution: `encryptor_a`, `black_transport`, or `encryptor_b`. Labels do not construct or order a topology. |
+| `rules[].ipv4_transport` | Fixed envelope size and provisioned-MTU contract for an IPv4 BLACK transport rule; see below. |
 
 Unknown JSON properties and invalid option combinations are rejected. Each rule
 must specify at least one impairment. Source, destination, protocol, ports, and
@@ -250,7 +255,7 @@ packets, before allowing for bursts. Set and report a deliberate queue budget.
 
 ## Management protection
 
-The application always bypasses:
+With `management_policy` omitted or set to `automatic`, the application bypasses:
 
 - TCP source or destination port 22, plus configured `ssh_ports`.
 - IPv4 link-local `169.254.0.0/16`, IPv6 link-local `fe80::/10`, and link-local
@@ -265,6 +270,15 @@ and SSM's remote service endpoints are not automatically excluded. When testing
 all traffic, protect the actual management path or use a separate management
 interface. A protected SSH port does not guarantee access if DNS, routing, or the
 host itself fails. Root processes and local administrators remain trusted.
+
+`management_policy: "separate"` explicitly opts into an independent management
+path. Every rule must be egress and specify a different `match.input_interface`.
+Only selected forwarded traffic is impaired; there are no automatic SSH, DHCP,
+or address bypass filters. Transit TCP port 22 is ordinary test traffic. `protect`
+and `ssh_ports` are rejected with this policy to avoid exceptions hidden within
+the transit model. Locally generated traffic and traffic from other incoming
+interfaces do not match these rules. Provision and verify the actual management
+path separately; this policy does not create a management interface or firewall.
 
 ## Routed appliance: Linux / EC2
 
@@ -317,7 +331,8 @@ This is a fragment to insert into a complete profile, not a standalone JSON file
 Masquerading is restricted to the client subnet entering `inside` and leaving
 `outside`. Published ports match traffic arriving on `outside` for a local
 appliance address. Targets must be inside the client subnet. Publishing protected
-SSH listening ports is rejected. Broad “forward all TCP” behavior is intentionally
+SSH listening ports is rejected under the automatic management policy. With
+separate management, explicit transit port-22 publishing is allowed. Broad “forward all TCP” behavior is intentionally
 replaced by explicit mappings. There is no hairpin-NAT or IPv6-NAT mode.
 
 The app creates one uniquely named `table ip impair_<id>`, containing its own
@@ -434,28 +449,189 @@ stale tokens, wrong namespaces, ownership changes, repeatable cleanup, and rollb
 at every command in a bidirectional apply. These tests use a deterministic kernel
 model and do not prove real packet behavior.
 
-On a disposable Ubuntu Linux VM, install the packet-test dependencies and run:
+### Native Linux
+
+On a disposable Ubuntu Linux VM with Go 1.22 or newer installed, run from the
+repository root. Race tests need a C compiler; the packet tests need root and
+network namespace privileges.
 
 ```bash
-sudo apt-get install -y iproute2 nftables iputils-ping iperf3 python3
-sudo python3 tests/integration.py --binary /usr/local/bin/impair
-sudo bash tests/watchdog.sh /usr/local/bin/impair
+sudo apt-get update
+sudo apt-get install -y build-essential iproute2 nftables iputils-ping ethtool iperf3 python3 tcpdump
+make test
+make build
+sudo python3 -u tests/transport.py --binary "$PWD/dist/impair"
+sudo python3 -u tests/integration.py --binary "$PWD/dist/impair"
+
+# Separately, on a host running systemd:
+sudo bash tests/watchdog.sh "$PWD/dist/impair"
 ```
 
-The packet test creates three named namespaces with veth links, changes sysctls
+`integration.py` creates three named namespaces with veth links, changes sysctls
 only inside the router namespace, and removes its own resources afterward. It
 checks bidirectional delay, SSH bypass, IPv6/IFB, jitter, statistical loss, TCP rate limiting,
 masquerading, DNAT, counters, and preservation of an unrelated nftables table.
 The watchdog test creates a temporary dummy interface on a systemd host and
-checks independent automatic removal. Neither test should be run on a host where
+checks independent automatic removal. These tests should not be run on a host where
 other automation might mutate their temporary resources. Tests print PASS only
 after their assertions succeed. Timing tests need an otherwise idle VM.
+
+`transport.py` checks the synthetic A/BLACK/B model in six namespaces, including
+its separate management network, byte accounting, and IPv4 PMTU behavior. See the
+inline-model section below for the detailed scope.
+
+### Docker on macOS or Linux
+
+Use a Docker engine running Linux containers. On macOS, tests run on the Docker
+VM's Linux kernel. [tests/Dockerfile](tests/Dockerfile) installs the packet-test
+tools and Go's build dependencies; its default Go 1.22 image checks the minimum
+supported toolchain. This is a local test image, not a deployment image. To test a
+different Go toolchain, pass `--build-arg GO_IMAGE=<official-golang-image-tag>`.
+
+From the repository root, build the image and run the Go checks without networking
+privileges. The source mount is read-only; test output and Go caches stay inside
+the disposable container.
+
+```bash
+docker build -t impair-test -f tests/Dockerfile tests
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/src,readonly" \
+  impair-test make test
+```
+
+For packet tests, start a container and build a Linux executable inside it. The
+explicit `--privileged` option permits network namespace creation and kernel
+network configuration inside the test environment. Use a dedicated test Docker
+environment; do not add host networking or mount the host's network/state paths.
+
+```bash
+docker run -d --rm --privileged --name impair-test-run \
+  --mount "type=bind,src=$PWD,dst=/src,readonly" \
+  impair-test sleep infinity
+docker exec impair-test-run go build -buildvcs=false -o /tmp/impair ./cmd/impair
+docker exec impair-test-run python3 -u tests/transport.py --binary /tmp/impair
+docker exec impair-test-run python3 -u tests/integration.py --binary /tmp/impair
+```
+
+Run the two packet suites independently so a failure in one does not hide the
+other's result. After changing source, repeat the build before rerunning a suite.
+When finished, including after a failed test, stop the container; `--rm` removes
+its writable layer and any remaining test namespaces with it:
+
+```bash
+docker stop impair-test-run
+```
+
+This container does not run systemd. Its packet fixtures use `--no-watchdog` and
+explicit cleanup; test automatic expiry with `tests/watchdog.sh` on a native
+systemd Linux host. Docker results do not establish Ubuntu/AL2023 or EC2 support.
+The current OrbStack validation found a pre-existing IFB alias/cleanup failure in
+`integration.py`; the inline `transport.py` suite passed. See
+[VALIDATION.md](VALIDATION.md) for the exact environment, evidence, and remaining
+acceptance work. A failed ownership check must not be bypassed to make tests pass.
 
 For deployment acceptance, run these on Ubuntu 24.04, Ubuntu 26.04, and AL2023,
 on each intended architecture; then test the real ENI/VPC route path. Record AMI ID,
 kernel, instance type, iproute2/nftables versions, offload settings, baseline RTT,
 target/observed rate and loss, and the cleanup result. A namespace test does not
 validate AWS route tables or instance networking allowances.
+
+## Synthetic inline IPv4 model
+
+This is an application-testing model for a provisioned routed path:
+
+```text
+client <-> device A <-> BLACK transport <-> device B <-> server
+             |                |               |
+             +------ independent management ---+
+```
+
+Use [inline-a.json](examples/inline-a.json),
+[inline-black.json](examples/inline-black.json), and
+[inline-b.json](examples/inline-b.json) on the respective stages. All values are
+synthetic examples. No TACLANE model has been selected, and this feature claims
+no TACLANE compatibility, Type 1 equivalence, or device-specific fidelity.
+Packets remain plaintext. No encryptor, security boundary, or tunnel is created.
+
+Each device contributes its own configured delay and queue, in each direction.
+These delays approximate processing latency; they do not model CPU service time,
+packet-rate capacity, or shared device throughput. BLACK transport owns the link
+rate, envelope accounting, transport delay and any configured loss. Component
+labels are attribution metadata in the profile/journal; actual routing must place
+the stages in sequence. A sum of delays on one queue does not reproduce three
+separate queues. Configure zero-delay stages by omitting their rules when no
+other impairment is needed.
+
+An `ipv4_transport` rule requires `component: "black_transport"`,
+`management_policy: "separate"`, IPv4 selection, and an explicit `impairment.rate`.
+For `black_mtu = M` and `overhead_bytes = H`, the model defines:
+
+- Modeled outer IP length = inner IPv4 total length + H.
+- Effective inner MTU = M − H.
+- Rate is modeled outer IP bits/s, excluding BLACK Ethernet framing, FCS,
+  preamble, and interpacket gaps. It is not application goodput.
+
+The supported egress path is plain, untagged Ethernet or veth. Its qdisc already
+counts the 14-byte Ethernet header, so the generated netem rate uses an adjustment
+of `H − 14`. With H=64 this is `rate 4mbit 50`; with H=0 it is `rate 4mbit -14`.
+This accounts for the envelope once on each direction's BLACK bottleneck. Device
+A and B do not acquire envelope accounting from their component labels.
+[Netem rate accounting](https://github.com/iproute2/iproute2/blob/main/man/man8/tc-netem.8)
+
+Preflight requires the selected egress interface MTU to equal M−H. It also rejects
+non-Ethernet, VLAN, bridge, and tunnel link kinds for this mode. M is bounded to
+68–65535; H must be nonnegative and leave at least 68 bytes for inner IPv4. For
+the example M=1500, H=64, provision **both BLACK interfaces and their A/B peer
+interfaces at MTU 1436**. Keep client/server and RED-facing interfaces larger.
+A and B then generate PMTU feedback when a packet cannot enter the modeled BLACK
+path. Matching both ends matters: a smaller receive-side veth MTU can drop a large
+packet before IP forwarding has an opportunity to return ICMP. This interface
+MTU applies to all packets using that interface, including unmatched packets; use
+dedicated transit interfaces. `impair` does not set, own, or restore MTUs, routes,
+forwarding sysctls, or offloads. The MTU check is a snapshot at apply, not ongoing
+enforcement against external changes. `plan`/`--dry-run` report the requirement
+without inspecting the host, and `status --json` includes current link MTUs.
+
+Use TSO/GSO/GRO-disabled paths for packet-level acceptance and record the settings.
+Aggregation can invalidate per-packet envelope accounting. Link type and MTU checks
+alone do not verify peer MTUs, offloads, routing, forwarding, firewall permissions, or other
+lower path MTUs. The fixture verifies the byte basis through qdisc counters.
+
+The supported fidelity is steady-state, unfragmented IPv4 with working DF/PMTU
+feedback. The provisioned router returns ICMP fragmentation-needed with the reduced
+MTU, allowing applications to adapt. This is a reduced inner-path MTU surrogate;
+there is no outer packet or tunnel ICMP translation. DF-clear traffic follows the
+underlying Linux fragmentation behavior, which is outside the supported model.
+No padding/alignment, inner-versus-outer fragmentation policy, IPv6 envelope, or
+PMTU black-hole scenario is implemented.
+[IPv4 PMTU discovery](https://www.rfc-editor.org/rfc/rfc1191.html)
+
+The ordinary impairment settings still act on plaintext packets; for example,
+corruption does not reproduce ciphertext authentication failure. Tunnel setup,
+successful rekey, disruptive changeover, peer failure, recovery, QoS classes,
+packet-rate limits, multicast, Layer 2/VLAN behavior, and XFRM/IPsec remain deferred.
+Future device profiles need a recorded model, software version, configuration,
+parameter source, and measured or documented evidence.
+
+`stop` and expiry end an experiment by removing impairment. They do not simulate
+a failed, closed encryptor. Each namespace has its own journal and must use a
+different state directory; namespace fixtures use `--no-watchdog` and explicit
+cleanup. There is no atomic A/BLACK/B transition or multi-namespace coordinator.
+
+On a disposable Linux VM with the earlier packet-test dependencies plus `ethtool`
+and `tcpdump`:
+
+```bash
+sudo python3 tests/transport.py --binary /usr/local/bin/impair
+```
+
+The fixture creates six namespaces (client, A, BLACK, B, server, management),
+provisions routes/MTUs, disables TSO/GSO/GRO only on its own links, and cleans up
+afterward. It checks separate and combined stage delays, transit SSH and management,
+UDP size/rate sweeps with zero and nonzero envelope overhead, Ethernet byte
+accounting, MTU prerequisite rejection, IPv4 DF boundaries in both directions,
+captured TCP PMTU feedback and adaptation, and preservation of provisioned MTUs
+after `stop`.
 
 ## Migration from the original scripts
 

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "Synthetic device B processing delay",
+  "management_policy": "separate",
+  "rules": [
+    {
+      "interface": "right", "direction": "egress", "component": "encryptor_b",
+      "match": {"family": "ipv4", "input_interface": "left"},
+      "impairment": {"delay": "4ms", "queue_packets": 1000}
+    },
+    {
+      "interface": "left", "direction": "egress", "component": "encryptor_b",
+      "match": {"family": "ipv4", "input_interface": "right"},
+      "impairment": {"delay": "5ms", "queue_packets": 1000}
+    }
+  ]
+}

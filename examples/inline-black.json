@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Synthetic BLACK transport; external interface MTUs must be 1436",
+  "management_policy": "separate",
+  "rules": [
+    {
+      "interface": "right", "direction": "egress", "component": "black_transport",
+      "match": {"family": "ipv4", "input_interface": "left"},
+      "ipv4_transport": {"black_mtu": 1500, "overhead_bytes": 64},
+      "impairment": {"delay": "30ms", "rate": "4mbit", "queue_packets": 1000}
+    },
+    {
+      "interface": "left", "direction": "egress", "component": "black_transport",
+      "match": {"family": "ipv4", "input_interface": "right"},
+      "ipv4_transport": {"black_mtu": 1500, "overhead_bytes": 64},
+      "impairment": {"delay": "40ms", "rate": "4mbit", "queue_packets": 1000}
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "Synthetic device A processing delay",
+  "management_policy": "separate",
+  "rules": [
+    {
+      "interface": "right", "direction": "egress", "component": "encryptor_a",
+      "match": {"family": "ipv4", "input_interface": "left"},
+      "impairment": {"delay": "2ms", "queue_packets": 1000}
+    },
+    {
+      "interface": "left", "direction": "egress", "component": "encryptor_a",
+      "match": {"family": "ipv4", "input_interface": "right"},
+      "impairment": {"delay": "3ms", "queue_packets": 1000}
+    }
+  ]
+}

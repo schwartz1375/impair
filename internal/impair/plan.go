@@ -23,8 +23,18 @@ type Resource struct {
 	Alias  string `json:"alias,omitempty"`
 }
 type Plan struct {
-	Commands  []Command  `json:"commands"`
-	Resources []Resource `json:"resources"`
+	Commands        []Command        `json:"commands"`
+	Resources       []Resource       `json:"resources"`
+	TransportChecks []TransportCheck `json:"transport_checks,omitempty"`
+}
+
+// These are checked prerequisites, never resources owned or restored by impair.
+type TransportCheck struct {
+	Device             string `json:"device"`
+	BlackMTU           int    `json:"black_mtu"`
+	InnerMTU           int    `json:"required_interface_mtu"`
+	OverheadBytes      int    `json:"overhead_bytes"`
+	NetemOverheadBytes int    `json:"netem_overhead_bytes"`
 }
 
 func (p *Plan) add(args ...string)  { p.Commands = append(p.Commands, Command{Args: args}) }
@@ -33,11 +43,14 @@ func (p *Plan) resource(r Resource) { p.Resources = append(p.Resources, r) }
 func Build(p Profile, id string) Plan {
 	var plan Plan
 	for i, r := range p.Rules {
+		if t := r.IPv4Transport; t != nil {
+			plan.TransportChecks = append(plan.TransportChecks, TransportCheck{Device: r.Interface, BlackMTU: t.BlackMTU, InnerMTU: t.InnerMTU(), OverheadBytes: t.OverheadBytes, NetemOverheadBytes: t.NetemOverhead()})
+		}
 		if r.Direction == "egress" {
 			plan.resource(Resource{Kind: "root", Device: r.Interface, Handle: rootHandle, Qdisc: "prio"})
 			plan.add("tc", "qdisc", "add", "dev", r.Interface, "root", "handle", rootHandle, "prio", "bands", "3", "priomap", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0")
 			args := []string{"tc", "qdisc", "replace", "dev", r.Interface, "parent", "7a00:3", "handle", netemHandle}
-			plan.add(append(args, r.Impairment.Args()...)...)
+			plan.add(append(args, r.netemArgs()...)...)
 			addFilters(&plan, p, r, rootHandle, "")
 		} else {
 			name := fmt.Sprintf("im%s%02d", id[:8], i)
@@ -47,7 +60,7 @@ func Build(p Profile, id string) Plan {
 			plan.add("ip", "link", "set", "dev", name, "up")
 			// The IFB is entirely owned; deleting it also removes its root qdisc.
 			args := []string{"tc", "qdisc", "add", "dev", name, "root", "handle", netemHandle}
-			plan.add(append(args, r.Impairment.Args()...)...)
+			plan.add(append(args, r.netemArgs()...)...)
 			plan.resource(Resource{Kind: "ingress", Device: r.Interface, Handle: "ffff:", Qdisc: "ingress"})
 			plan.add("tc", "qdisc", "add", "dev", r.Interface, "handle", "ffff:", "ingress")
 			addFilters(&plan, p, r, "ffff:", name)
@@ -82,36 +95,39 @@ func addFilters(plan *Plan, p Profile, r Rule, parent, ifb string) {
 		}
 		plan.add(a...)
 	}
-	// Always bypass management and link-local control traffic before selection.
-	for _, family := range []string{"ip", "ipv6"} {
-		for _, port := range append([]int{22}, p.SSHPorts...) {
-			for _, side := range []string{"src_port", "dst_port"} {
-				filter(family, []string{"ip_proto", "tcp", side, strconv.Itoa(port)}, true)
+	// Legacy profiles retain automatic bypasses. Separate management selects only
+	// forwarded traffic by incoming interface, without transit port exceptions.
+	if p.ManagementPolicy != "separate" {
+		for _, family := range []string{"ip", "ipv6"} {
+			for _, port := range p.protectedSSHPorts() {
+				for _, side := range []string{"src_port", "dst_port"} {
+					filter(family, []string{"ip_proto", "tcp", side, strconv.Itoa(port)}, true)
+				}
+			}
+			ports := []int{67, 68}
+			if family == "ipv6" {
+				ports = []int{546, 547}
+			}
+			for _, port := range ports {
+				for _, side := range []string{"src_port", "dst_port"} {
+					filter(family, []string{"ip_proto", "udp", side, strconv.Itoa(port)}, true)
+				}
 			}
 		}
-		ports := []int{67, 68}
-		if family == "ipv6" {
-			ports = []int{546, 547}
-		}
-		for _, port := range ports {
-			for _, side := range []string{"src_port", "dst_port"} {
-				filter(family, []string{"ip_proto", "udp", side, strconv.Itoa(port)}, true)
+		networks := append([]string{"169.254.0.0/16", "fe80::/10", "ff02::/16"}, p.Protect...)
+		for _, s := range networks {
+			n, _ := prefix(s)
+			f := "ipv6"
+			if n.Addr().Is4() {
+				f = "ip"
+			}
+			for _, side := range []string{"src_ip", "dst_ip"} {
+				filter(f, []string{side, n.String()}, true)
 			}
 		}
-	}
-	networks := append([]string{"169.254.0.0/16", "fe80::/10", "ff02::/16"}, p.Protect...)
-	for _, s := range networks {
-		n, _ := prefix(s)
-		f := "ipv6"
-		if n.Addr().Is4() {
-			f = "ip"
+		for _, t := range []string{"133", "134", "135", "136", "137"} {
+			filter("ipv6", []string{"ip_proto", "icmpv6", "type", t}, true)
 		}
-		for _, side := range []string{"src_ip", "dst_ip"} {
-			filter(f, []string{side, n.String()}, true)
-		}
-	}
-	for _, t := range []string{"133", "134", "135", "136", "137"} {
-		filter("ipv6", []string{"ip_proto", "icmpv6", "type", t}, true)
 	}
 	m := r.Match
 	families := []string{"ip", "ipv6"}

@@ -121,6 +121,12 @@ func mainErr(args []string) error {
 			if p.Gateway != nil {
 				fmt.Println("# Prerequisite: IPv4 forwarding, routes, and host/VPC firewall permissions.")
 			}
+			if p.ManagementPolicy == "separate" {
+				fmt.Println("# Separate management: selected transit traffic has no automatic port/address bypasses. Provision forwarding, routes, and an independent management path.")
+			}
+			for _, check := range plan.TransportChecks {
+				fmt.Printf("# IPv4 transport %s: required provisioned Ethernet MTU %d = BLACK MTU %d - overhead %d; netem overhead %d accounts in outer IP bytes. No tunnel headers are created.\n", check.Device, check.InnerMTU, check.BlackMTU, check.OverheadBytes, check.NetemOverheadBytes)
+			}
 			for _, c := range plan.Commands {
 				fmt.Println(c.String())
 			}
